@@ -1,0 +1,54 @@
+# Production overrides for a public server (Oracle Cloud, EC2, any VPS):
+#
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
+#
+# Differences from local:
+#   - nothing but Caddy is reachable from the internet: the databases, the API
+#     and the frontend lose their published ports;
+#   - secrets are required (compose refuses to start without them, and the API
+#     refuses to start in production without them);
+#   - Caddy serves HTTPS with an automatic Let's Encrypt certificate for $DOMAIN,
+#     or plain HTTP on port 80 when DOMAIN is not set yet.
+# Put the values in a .env file next to this one (see .env.example).
+
+services:
+  timescale:
+    ports: !reset []
+    environment:
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?set DB_PASSWORD in .env}
+
+  mongo:
+    ports: !reset []
+
+  backend:
+    ports: !reset []
+    environment:
+      NODE_ENV: production
+      TIMESCALE_PASSWORD: ${DB_PASSWORD:?set DB_PASSWORD in .env}
+      JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET in .env}
+      INGEST_KEY: ${INGEST_KEY:?set INGEST_KEY in .env}
+
+  simulator:
+    environment:
+      INGEST_KEY: ${INGEST_KEY:?set INGEST_KEY in .env}
+
+  frontend:
+    ports: !reset []
+    restart: unless-stopped
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      DOMAIN: ${DOMAIN:-}
+    command: caddy reverse-proxy --from ${DOMAIN:-:80} --to frontend:80
+    volumes:
+      - caddy-data:/data
+    depends_on:
+      - frontend
+
+volumes:
+  caddy-data:

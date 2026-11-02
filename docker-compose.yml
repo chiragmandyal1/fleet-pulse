@@ -1,7 +1,9 @@
+# `docker compose up --build` runs the whole stack; the dashboard is on :8080.
+# For local development, `docker compose up -d timescale mongo` and run the
+# apps with npm instead (see README).
 services:
   timescale:
     image: timescale/timescaledb:2.17.2-pg16
-    container_name: fleetpulse-timescale
     environment:
       POSTGRES_USER: fleetpulse
       POSTGRES_PASSWORD: fleetpulse
@@ -19,7 +21,6 @@ services:
 
   mongo:
     image: mongo:7
-    container_name: fleetpulse-mongo
     ports:
       - "27018:27017"
     volumes:
@@ -29,6 +30,45 @@ services:
       interval: 5s
       timeout: 5s
       retries: 10
+
+  backend:
+    build: ./backend
+    environment:
+      TIMESCALE_HOST: timescale
+      TIMESCALE_PORT: 5432
+      MONGO_URI: mongodb://mongo:27017/fleetpulse
+      # Local-demo values. A real deployment sets its own in the environment.
+      JWT_SECRET: ${JWT_SECRET:-local-compose-jwt-secret}
+      INGEST_KEY: ${INGEST_KEY:-dev-ingest-key}
+    ports:
+      - "3000:3000"
+    depends_on:
+      timescale: { condition: service_healthy }
+      mongo: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:3000/health"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+
+  simulator:
+    build: ./simulator
+    command: ["--backfill", "6h"]
+    environment:
+      API_URL: http://backend:3000
+      MONGO_URI: mongodb://mongo:27017/fleetpulse
+      INGEST_KEY: ${INGEST_KEY:-dev-ingest-key}
+    depends_on:
+      backend: { condition: service_healthy }
+    restart: unless-stopped
+
+  frontend:
+    build: ./frontend
+    ports:
+      - "8080:80"
+    depends_on:
+      - backend
 
 volumes:
   timescale-data:

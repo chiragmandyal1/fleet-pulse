@@ -81,7 +81,10 @@ export function tick(
     if (s.online) {
       // Random walk, not a fresh random value: consecutive readings correlate.
       s.bandwidth = clamp(s.bandwidth + (rand() - 0.5) * 8, BANDWIDTH.min, BANDWIDTH.max);
-      s.rfSignal = clamp(s.rfSignal + (rand() - 0.5) * 1.2, RF.min, RF.max);
+      // Pulled gently back toward a healthy level, as a well-aligned dish is;
+      // the noise still carries some below threshold for a while.
+      const target = device.rfThreshold + 3.5;
+      s.rfSignal = clamp(s.rfSignal + (target - s.rfSignal) * 0.01 + (rand() - 0.5) * 0.9, RF.min, RF.max);
     }
 
     return {

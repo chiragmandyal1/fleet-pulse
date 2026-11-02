@@ -48,7 +48,38 @@ FROM telemetry
 GROUP BY bucket, device_id
 WITH NO DATA;
 
+-- Real-time: buckets the policy hasn't materialised yet are computed from raw
+-- rows at query time, so the newest point on the chart is never 5+ minutes stale.
+ALTER MATERIALIZED VIEW telemetry_5min SET (timescaledb.materialized_only = false);
+
+-- The policy only refreshes inside [now - start_offset, now - end_offset].
+-- Six days, not one hour, so backfilled history (--backfill 6h) gets
+-- materialised too; only buckets invalidated by new writes are recomputed, so
+-- the wide window costs nothing on a quiet run. Kept under the 7-day
+-- compression age so a refresh never has to read compressed chunks.
 SELECT add_continuous_aggregate_policy('telemetry_5min',
-    start_offset => INTERVAL '1 hour',
+    start_offset => INTERVAL '6 days',
     end_offset   => INTERVAL '5 minutes',
     schedule_interval => INTERVAL '5 minutes');
+
+-- Online/offline transitions, detected at ingest. Disconnection reports pair
+-- these up instead of scanning every raw sample: 300 devices at one sample per
+-- 5s is ~5M telemetry rows a day, against roughly ten thousand events.
+CREATE TABLE link_events (
+    time      TIMESTAMPTZ NOT NULL,
+    device_id TEXT        NOT NULL,
+    online    BOOLEAN     NOT NULL
+);
+
+SELECT create_hypertable('link_events', by_range('time', INTERVAL '7 days'));
+
+CREATE INDEX link_events_device_time_idx ON link_events (device_id, time DESC);
+
+-- Retention, so a server that runs for months never fills its disk: everything
+-- goes after 30 days, which is also the longest window the app can show. Raw
+-- samples (about 5M rows a day) are the bulk of it. Safe with the aggregate
+-- above: its refresh window (6 days) never reaches back as far as the data
+-- being dropped.
+SELECT add_retention_policy('telemetry', INTERVAL '30 days');
+SELECT add_retention_policy('telemetry_5min', INTERVAL '30 days');
+SELECT add_retention_policy('link_events', INTERVAL '30 days');

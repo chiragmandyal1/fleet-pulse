@@ -6,6 +6,15 @@ export type DeviceDocument = HydratedDocument<Device>;
 /** Fixed dish, moving terminal, or a hybrid link that fails over to cellular. */
 export type DeviceKind = 'fixed' | 'mobile' | 'hybrid';
 
+export type Beam = 'North' | 'East' | 'West' | 'South';
+
+/** Cellular backup SIM: hybrid terminals fail over to it, mobile ones carry one. */
+export interface Sim {
+  iccid: string;
+  carrier: string;
+  planGb: number;
+}
+
 @Schema({ collection: 'devices', timestamps: true })
 export class Device {
   /** Stable public id, e.g. FP-00042. This is what telemetry rows reference. */
@@ -15,7 +24,7 @@ export class Device {
   @Prop({ required: true })
   name!: string;
 
-  @Prop({ required: true, enum: ['fixed', 'mobile', 'hybrid'] })
+  @Prop({ type: String, required: true, enum: ['fixed', 'mobile', 'hybrid'] })
   kind!: DeviceKind;
 
   /**
@@ -37,6 +46,15 @@ export class Device {
   /** Below this, RF signal counts as degraded on the drilldown chart. */
   @Prop({ required: true, default: 8 })
   rfThreshold!: number;
+
+  @Prop({ required: true })
+  satellite!: string;
+
+  @Prop({ type: String, required: true, enum: ['North', 'East', 'West', 'South'] })
+  beam!: Beam;
+
+  @Prop({ type: Object })
+  sim?: Sim;
 }
 
 export const DeviceSchema = SchemaFactory.createForClass(Device);

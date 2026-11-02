@@ -1,0 +1,14 @@
+# Used on a shared server, where one Caddy (~/edge) owns ports 80/443 and does the HTTPS for every app:
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml -f docker-compose.edge.yml up -d --build
+# Needs the external network once:  docker network create edge
+services:
+  caddy:
+    profiles: ["standalone"] # not started here; the edge Caddy replaces it
+  frontend:
+    networks:
+      default: {}
+      edge: { aliases: [fleetpulse-web] }
+
+networks:
+  edge:
+    external: true

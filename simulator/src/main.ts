@@ -15,6 +15,7 @@ const API = process.env.API_URL ?? 'http://localhost:3000';
 const MONGO_URI = process.env.MONGO_URI ?? 'mongodb://localhost:27018/fleetpulse';
 const DEVICE_COUNT = Number(process.env.DEVICE_COUNT ?? 300);
 const TICK_MS = Number(process.env.TICK_MS ?? 5000);
+const INGEST_KEY = process.env.INGEST_KEY ?? 'dev-ingest-key';
 
 /** Parses `6h`, `30m`, `90s` into milliseconds. */
 function parseDuration(text: string): number {
@@ -24,11 +25,13 @@ function parseDuration(text: string): number {
   return Number(m[1]) * unit;
 }
 
-async function seedMongo(devices: Device[]): Promise<void> {
+/** Upserts customers and devices. Returns true on the very first run (empty fleet). */
+async function seedMongo(devices: Device[]): Promise<boolean> {
   const client = new MongoClient(MONGO_URI);
   try {
     await client.connect();
     const db = client.db();
+    const firstRun = (await db.collection('devices').estimatedDocumentCount()) === 0;
     await db.collection('customers').createIndex({ customerId: 1 }, { unique: true });
     await db.collection('devices').createIndex({ deviceId: 1 }, { unique: true });
 
@@ -44,6 +47,7 @@ async function seedMongo(devices: Device[]): Promise<void> {
       })),
     );
     console.log(`seeded ${CUSTOMERS.length} customers, ${devices.length} devices`);
+    return firstRun;
   } finally {
     await client.close();
   }
@@ -52,7 +56,7 @@ async function seedMongo(devices: Device[]): Promise<void> {
 async function post(samples: unknown[]): Promise<number> {
   const res = await fetch(`${API}/telemetry/batch`, {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
+    headers: { 'content-type': 'application/json', 'x-ingest-key': INGEST_KEY },
     body: JSON.stringify({ samples }),
   });
   if (!res.ok) {
@@ -63,10 +67,16 @@ async function post(samples: unknown[]): Promise<number> {
 
 async function main(): Promise<void> {
   const backfillArg = process.argv.indexOf('--backfill');
-  const backfillMs = backfillArg > -1 ? parseDuration(process.argv[backfillArg + 1] ?? '') : 0;
+  let backfillMs = backfillArg > -1 ? parseDuration(process.argv[backfillArg + 1] ?? '') : 0;
 
   const devices = buildFleet(DEVICE_COUNT);
-  await seedMongo(devices);
+  const firstRun = await seedMongo(devices);
+  // Backfill only into an empty fleet: rerunning it (every `docker compose up`)
+  // would write a second copy of the same history.
+  if (backfillMs > 0 && !firstRun) {
+    console.log('fleet already seeded, skipping backfill');
+    backfillMs = 0;
+  }
 
   const state = initialState(devices);
   const rand = rng(1337);
