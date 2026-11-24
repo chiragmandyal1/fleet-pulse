@@ -1,7 +1,7 @@
 import 'leaflet/dist/leaflet.css'
 import { Box } from '@mui/material'
-import { divIcon, type LatLngBoundsExpression, type Map as LeafletMap } from 'leaflet'
-import { useEffect, useState } from 'react'
+import { divIcon, svg, type LatLngBoundsExpression, type Map as LeafletMap } from 'leaflet'
+import { useEffect, useMemo, useState } from 'react'
 import { MapContainer, Marker, Pane, Polygon, Polyline, Tooltip } from 'react-leaflet'
 import type { Device } from './api.ts'
 import { Icon } from './common.tsx'
@@ -84,6 +84,13 @@ export default function FleetMap({ devices, height = 440 }: { devices: Device[];
   const [named, setNamed] = useState<Set<string>>(new Set())
   /** Edge labels are drawn over the map, so they hide while a zoom animates. */
   const [zooming, setZooming] = useState(false)
+  /**
+   * The land, borders and grid share one SVG renderer. Leaflet only redraws a
+   * renderer when a drag ends, and by default draws just 10% past the view, so a
+   * long drag showed the land cut off in a band. This one draws a full view past
+   * every edge and is redrawn while the map moves (see the effect below).
+   */
+  const baseRenderer = useMemo(() => svg({ padding: 1, pane: 'base' }), [])
 
   // Open fitted to India, and keep that as the furthest-out zoom. Recomputed when
   // the panel itself resizes (not only the window); a zoom below it snaps back.
@@ -124,6 +131,25 @@ export default function FleetMap({ devices, height = 440 }: { devices: Device[];
       rename()
     })
     observer.observe(map.getContainer())
+    // Redraw the base drawing during a drag, at most once per frame, so the land
+    // never runs out under the cursor. Skipped during zoom animations, which
+    // Leaflet redraws itself when they end.
+    let frame = 0
+    let animating = false
+    const redraw = () => {
+      if (animating || frame) return
+      frame = requestAnimationFrame(() => {
+        frame = 0
+        // `_update` is what Leaflet itself runs on moveend: it re-centres the SVG on the view.
+        const r = baseRenderer as unknown as { _update: () => void; _map?: unknown }
+        if (r._map) r._update()
+      })
+    }
+    const animStart = () => (animating = true)
+    const animEnd = () => (animating = false)
+    map.on('move', redraw)
+    map.on('zoomstart', animStart)
+    map.on('zoomend', animEnd)
     map.on('zoomend', lock)
     map.on('move', relabel)
     map.on('zoomstart', zoomStart)
@@ -133,12 +159,16 @@ export default function FleetMap({ devices, height = 440 }: { devices: Device[];
       el.removeEventListener('wheel', touch)
       el.removeEventListener('keydown', touch)
       observer.disconnect()
+      cancelAnimationFrame(frame)
+      map.off('move', redraw)
+      map.off('zoomstart', animStart)
+      map.off('zoomend', animEnd)
       map.off('zoomend', lock)
       map.off('move', relabel)
       map.off('zoomstart', zoomStart)
       map.off('zoomend', zoomEnd)
     }
-  }, [map])
+  }, [map, baseRenderer])
 
   // A zoom button counts as the user moving the map, so later resizes leave their view alone.
   const zoomIn = () => {
@@ -209,16 +239,19 @@ export default function FleetMap({ devices, height = 440 }: { devices: Device[];
           <Polyline
             positions={GRID_MINOR}
             pathOptions={{ color: C.grid, opacity: 0.05, weight: 1 }}
+            renderer={baseRenderer}
             interactive={false}
           />
           <Polyline
             positions={GRID_MAJOR}
             pathOptions={{ color: C.grid, opacity: 0.13, weight: 1 }}
+            renderer={baseRenderer}
             interactive={false}
           />
           <Polygon
             positions={OUTLINE}
             pathOptions={{ color: C.coast, weight: 1.4, fillColor: C.land, fillOpacity: 1 }}
+            renderer={baseRenderer}
             interactive={false}
           />
           {/* State borders, dashed like the design's internal borders, always on. */}
@@ -227,6 +260,7 @@ export default function FleetMap({ devices, height = 440 }: { devices: Device[];
               key={st.name}
               positions={st.rings}
               pathOptions={{ color: C.coast, opacity: 0.45, weight: 0.8, fill: false }}
+              renderer={baseRenderer}
               interactive={false}
             />
           ))}
