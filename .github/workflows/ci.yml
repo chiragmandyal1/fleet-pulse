@@ -1,0 +1,91 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: |
+            backend/package-lock.json
+            simulator/package-lock.json
+            frontend/package-lock.json
+
+      - name: Simulator tests
+        working-directory: simulator
+        run: npm ci && npm test
+
+      - name: Start TimescaleDB and MongoDB
+        run: docker compose up -d --wait timescale mongo
+
+      - name: Backend lint, unit + API tests with coverage
+        working-directory: backend
+        run: |
+          npm ci
+          npm run lint
+          npm run test:ci
+
+      - name: Coverage summary
+        if: always()
+        working-directory: backend
+        run: |
+          if [ -f coverage/coverage-summary.json ]; then
+            node -e "const t=require('./coverage/coverage-summary.json').total; console.log('| Metric | % |\n|---|---|\n' + ['lines','statements','functions','branches'].map(k=>'| '+k+' | '+t[k].pct+' |').join('\n'))" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Frontend lint and build
+        working-directory: frontend
+        run: |
+          npm ci
+          npm run lint
+          npm run build
+
+  deploy:
+    # Runs only on master pushes, after the tests pass, and only once the
+    # DEPLOY_HOST and DEPLOY_SSH_KEY secrets exist in the repo settings.
+    needs: test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    concurrency: deploy
+    env:
+      DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+      DEPLOY_PATH: ${{ secrets.DEPLOY_PATH || 'fleet-pulse' }}
+    steps:
+      - name: Check secrets
+        id: check
+        run: |
+          if [ -z "$DEPLOY_HOST" ]; then echo "No DEPLOY_HOST secret; skipping deploy."; echo "skip=true" >> "$GITHUB_OUTPUT"; fi
+
+      - uses: actions/checkout@v4
+        if: steps.check.outputs.skip != 'true'
+
+      - name: Set up SSH
+        if: steps.check.outputs.skip != 'true'
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.DEPLOY_SSH_KEY }}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -H "${DEPLOY_HOST#*@}" >> ~/.ssh/known_hosts
+
+      - name: Copy code and restart containers
+        if: steps.check.outputs.skip != 'true'
+        run: |
+          rsync -az --delete -e "ssh -i ~/.ssh/deploy_key" \
+            --exclude node_modules --exclude dist --exclude coverage --exclude .git --exclude '.env' --exclude '.env.*' \
+            ./ "$DEPLOY_HOST:~/$DEPLOY_PATH/"
+          ssh -i ~/.ssh/deploy_key "$DEPLOY_HOST" "cd ~/$DEPLOY_PATH && \
+            docker compose -f docker-compose.yml -f docker-compose.prod.yml -f docker-compose.edge.yml up -d --build && \
+            docker image prune -f >/dev/null && \
+            docker compose -f docker-compose.yml -f docker-compose.prod.yml -f docker-compose.edge.yml ps --format '{{.Service}}  {{.Status}}'"

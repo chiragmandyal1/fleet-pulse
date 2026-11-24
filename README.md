@@ -1,5 +1,7 @@
 # Fleet Pulse
 
+[![CI](https://github.com/chiragmandyal1/fleet-pulse/actions/workflows/ci.yml/badge.svg)](https://github.com/chiragmandyal1/fleet-pulse/actions/workflows/ci.yml)
+
 Open-source device-monitoring dashboard for satellite and cellular links — the kind of NOC
 platform an operator watches all day, built end to end on **entirely synthetic data**.
 
@@ -162,7 +164,13 @@ db/init/     Timescale schema: hypertable, compression, continuous aggregate, li
 cd simulator && npm test             # telemetry generation
 cd backend   && npm test             # ingestion validation and batching
 cd backend   && npm run test:e2e     # auth and scoping, against the real databases
+cd backend   && npm run test:ci      # unit + e2e together, with a coverage report
 ```
+
+GitHub Actions runs all of this on every push (simulator tests, backend lint, unit + e2e tests
+against real TimescaleDB and MongoDB containers with coverage, frontend lint and build). On
+`master` it then deploys to the server over SSH, once the `DEPLOY_HOST` and `DEPLOY_SSH_KEY`
+repository secrets are set (optional `DEPLOY_PATH`, default `fleet-pulse` in the home folder).
 
 Each suite covers what a bug would break silently:
 
